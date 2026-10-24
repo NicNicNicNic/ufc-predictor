@@ -2,11 +2,10 @@ import os
 import pandas as pd
 import numpy as np
 import joblib
-from sklearn.model_selection import train_test_split
 from xgboost import XGBClassifier
 
 def train_model():
-    print("--- Training UFC Fight Predictor Model (Tuned XGBoost) ---")
+    print("--- Training UFC Fight Predictor Model (Temporal Split + Tuned XGBoost) ---")
     csv_path = os.path.join("data", "raw", "ufc-master.csv")
     if not os.path.exists(csv_path):
         print(f"❌ Dataset not found at {csv_path}")
@@ -19,6 +18,15 @@ def train_model():
     df_clean = df[df[target_col].isin(['red', 'blue'])].copy()
     
     df_clean['target'] = df_clean[target_col].map({'red': 1, 'blue': 0})
+
+    # Ensure date column exists and sort chronologically for a true temporal split
+    date_col = 'date' if 'date' in df_clean.columns else 'Date'
+    if date_col in df_clean.columns:
+        df_clean[date_col] = pd.to_datetime(df_clean[date_col])
+        df_clean = df_clean.sort_values(date_col).reset_index(drop=True)
+        print(f"📅 Sorting dataset chronologically by '{date_col}'...")
+    else:
+        print("⚠️ Warning: Date column not found. Falling back to index-based chronological split.")
 
     candidate_features = [
         'sig_str_dif', 'B_age', 'R_age', 'avg_td_dif', 'win_streak_dif',
@@ -36,10 +44,12 @@ def train_model():
     X = df_clean[features]
     y = df_clean['target'].astype(int)
 
-    # Train / Test Split
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
+    # Strict Chronological / Temporal Split (First 80% train, Last 20% test)
+    split_idx = int(len(X) * 0.8)
+    X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
+    y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
+
+    print(f"📈 Training set: {len(X_train)} fights | Test set (Future): {len(X_test)} fights")
 
     # Tuned XGBoost Classifier Configuration
     clf = XGBClassifier(
@@ -59,7 +69,7 @@ def train_model():
     joblib.dump(features, os.path.join("models", "feature_names.pkl"))
     joblib.dump((X_test, y_test), os.path.join("models", "test_split.pkl"))
     
-    print("✅ Tuned XGBoost model, feature list, and test split successfully saved to 'models/'!")
+    print("✅ Temporal split model, feature list, and test split successfully saved to 'models/'!")
 
 if __name__ == "__main__":
     train_model()
