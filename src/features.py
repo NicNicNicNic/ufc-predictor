@@ -1,146 +1,77 @@
-import os
 import pandas as pd
 import numpy as np
 
-def engineer_advanced_features():
-    print("--- Engineering Comprehensive Features (Including Custom Elo System) ---")
-    csv_path = os.path.join("data", "raw", "ufc-master.csv")
-    if not os.path.exists(csv_path):
-        print(f"❌ Master dataset not found at {csv_path}")
-        return
-
-    df = pd.read_csv(csv_path)
+def engineer_features(df):
+    """
+    Applies feature engineering, calculating differentials, Bayesian shrinkage 
+    for short-record fighters, granular grappling metrics, and advanced tracking.
+    """
+    df = df.copy()
     
-    if 'date' in df.columns:
-        df['date'] = pd.to_datetime(df['date'])
-        # Sort chronologically to track fighter progression correctly
-        df = df.sort_values('date').reset_index(drop=True)
+    # Ensure numeric types for core stats, grappling, and advanced features
+    stat_cols = [
+        'sig_str_landed', 'sig_str_absorbed', 'td_landed', 'sub_att', 
+        'ctrl_time_secs', 'td_def_pct', 'td_att', 'sig_str_def_pct', 'layoff_days'
+    ]
+    
+    for col in stat_cols:
+        for corner in ['R', 'B']:
+            full_col = f'{corner}_{col}'
+            if full_col in df.columns:
+                df[full_col] = pd.to_numeric(df[full_col], errors='coerce')
+
+    # Weight-class baseline smoothing (Bayesian Priors for low-sample/debut fighters)
+    if 'weight_class' in df.columns:
+        for col in stat_cols:
+            for corner in ['R', 'B']:
+                full_col = f'{corner}_{col}'
+                if full_col in df.columns:
+                    wc_median = df.groupby('weight_class')[full_col].transform('median')
+                    df[full_col] = df[full_col].fillna(wc_median)
+
+    # Standard volume & physical differentials
+    df['sig_str_dif'] = df.get('R_avg_SIG_STR_landed', 0) - df.get('B_avg_SIG_STR_landed', 0)
+    df['age_dif'] = df.get('R_age', 0) - df.get('B_age', 0)
+    df['win_streak_dif'] = df.get('R_current_win_streak', 0) - df.get('B_current_win_streak', 0)
+    df['loss_dif'] = df.get('R_current_lose_streak', 0) - df.get('B_current_lose_streak', 0)
+    df['reach_dif'] = df.get('R_Reach_cms', 0) - df.get('B_Reach_cms', 0)
+    df['height_dif'] = df.get('R_Height_cms', 0) - df.get('B_Height_cms', 0)
+
+    # --- GRANULAR GRAPPLING DIFFERENTIALS ---
+    df['td_landed_dif'] = df.get('R_avg_td_landed', 0) - df.get('B_avg_td_landed', 0)
+    
+    if 'R_ctrl_time_secs' in df.columns and 'B_ctrl_time_secs' in df.columns:
+        df['ctrl_time_dif'] = df['R_ctrl_time_secs'] - df['B_ctrl_time_secs']
     else:
-        print("❌ 'date' column missing from dataset.")
-        return
+        df['ctrl_time_dif'] = 0.0
 
-    # Trackers for chronological progression
-    fighter_history = {}
-    fighter_elos = {} # Default baseline Elo for debut/unknown fighters = 1500
+    df['sub_att_dif'] = df.get('R_avg_sub_att', 0) - df.get('B_avg_sub_att', 0)
+
+    if 'R_td_def_pct' in df.columns and 'B_td_def_pct' in df.columns:
+        df['td_def_dif'] = df['R_td_def_pct'] - df['B_td_def_pct']
+    else:
+        df['td_def_dif'] = 0.0
+
+    # --- ADVANCED METRICS: DAMAGE RATIOS & LAYOFFS ---
+    r_landed = df.get('R_sig_str_landed', df.get('R_avg_SIG_STR_landed', 1))
+    r_absorbed = df.get('R_sig_str_absorbed', 1)
+    b_landed = df.get('B_sig_str_landed', df.get('B_avg_SIG_STR_landed', 1))
+    b_absorbed = df.get('B_sig_str_absorbed', 1)
     
-    r_layoffs, b_layoffs = [], []
-    r_last3_sig, b_last3_sig = [], []
-    r_elo_list, b_elo_list = [], []
+    df['R_damage_ratio'] = r_landed / (r_absorbed + 1.0)
+    df['B_damage_ratio'] = b_landed / (b_absorbed + 1.0)
+    df['damage_ratio_dif'] = df['R_damage_ratio'] - df['B_damage_ratio']
 
-    for idx, row in df.iterrows():
-        f_date = row['date']
-        r_fighter = str(row.get('R_fighter', '')).strip().lower()
-        b_fighter = str(row.get('B_fighter', '')).strip().lower()
-        
-        r_sig = row.get('R_avg_SIG_STR_landed', 0.0)
-        b_sig = row.get('B_avg_SIG_STR_landed', 0.0)
+    if 'R_layoff_days' in df.columns and 'B_layoff_days' in df.columns:
+        df['layoff_dif'] = df['R_layoff_days'] - df['B_layoff_days']
+    else:
+        df['layoff_dif'] = 0.0
 
-        # --- 1. Fetch Pre-Fight Elo Ratings ---
-        r_current_elo = fighter_elos.get(r_fighter, 1500.0)
-        b_current_elo = fighter_elos.get(b_fighter, 1500.0)
-        
-        r_elo_list.append(r_current_elo)
-        b_elo_list.append(b_current_elo)
+    # Stance interaction feature (Orthodox = 0, Southpaw = 1, Switch = 2)
+    if 'R_stance' in df.columns and 'B_stance' in df.columns:
+        stance_map = {'orthodox': 0, 'southpaw': 1, 'switch': 2}
+        r_stance_val = df['R_stance'].str.strip().str.lower().map(stance_map).fillna(0)
+        b_stance_val = df['B_stance'].str.strip().str.lower().map(stance_map).fillna(0)
+        df['stance_mismatch'] = (r_stance_val != b_stance_val).astype(int)
 
-        # --- 2. Temporal Layoffs & Rolling Striking Averages ---
-        if r_fighter in fighter_history and fighter_history[r_fighter]:
-            prev_fight = fighter_history[r_fighter][-1]
-            r_layoffs.append((f_date - prev_fight['date']).days)
-            
-            past_sigs = [f['sig_str'] for f in fighter_history[r_fighter][-3:]]
-            r_last3_sig.append(sum(past_sigs) / len(past_sigs) if past_sigs else r_sig)
-        else:
-            r_layoffs.append(365)
-            r_last3_sig.append(r_sig)
-
-        if b_fighter in fighter_history and fighter_history[b_fighter]:
-            prev_fight = fighter_history[b_fighter][-1]
-            b_layoffs.append((f_date - prev_fight['date']).days)
-            
-            past_sigs = [f['sig_str'] for f in fighter_history[b_fighter][-3:]]
-            b_last3_sig.append(sum(past_sigs) / len(past_sigs) if past_sigs else b_sig)
-        else:
-            b_layoffs.append(365)
-            b_last3_sig.append(b_sig)
-
-        # --- 3. Determine Match Outcome & Update Elo Post-Fight ---
-        # Assuming 'Winner' column specifies 'Red' or 'Blue' (adjust if your column name differs)
-        winner = str(row.get('Winner', '')).strip().lower()
-        method = str(row.get('finish_method', '')).strip().lower() # e.g., KO/TKO, SUB, DEC
-
-        # Method multiplier: Finishes scale rating adjustments higher than decisions
-        k_base = 32.0
-        multiplier = 1.2 if ('ko' in method or 'sub' in method) else 1.0
-
-        if 'red' in winner:
-            actual_r = 1.0
-        elif 'blue' in winner:
-            actual_r = 0.0
-        else:
-            actual_r = 0.5  # Draw or No Contest
-
-        actual_b = 1.0 - actual_r
-
-        # Calculate expected scores
-        exp_r = 1.0 / (1.0 + 10 ** ((b_current_elo - r_current_elo) / 400.0))
-        exp_b = 1.0 - exp_r
-
-        # Update post-fight Elo
-        new_r_elo = r_current_elo + (k_base * multiplier) * (actual_r - exp_r)
-        new_r_s_elo = b_current_elo + (k_base * multiplier) * (actual_b - exp_b)
-
-        fighter_elos[r_fighter] = new_r_elo
-        fighter_elos[b_fighter] = new_r_s_elo
-
-        # Update historical trackers
-        if r_fighter:
-            if r_fighter not in fighter_history:
-                fighter_history[r_fighter] = []
-            fighter_history[r_fighter].append({'date': f_date, 'sig_str': r_sig})
-            
-        if b_fighter:
-            if b_fighter not in fighter_history:
-                fighter_history[b_fighter] = []
-            fighter_history[b_fighter].append({'date': f_date, 'sig_str': b_sig})
-
-    # --- 4. Assign Features to DataFrame ---
-    df['R_elo'] = r_elo_list
-    df['B_elo'] = b_elo_list
-    df['elo_dif'] = df['R_elo'] - df['B_elo']
-
-    df['R_days_since_last_fight'] = r_layoffs
-    df['B_days_since_last_fight'] = b_layoffs
-    df['layoff_dif'] = df['R_days_since_last_fight'] - df['B_days_since_last_fight']
-    
-    df['R_sig_str_last3'] = r_last3_sig
-    df['B_sig_str_last3'] = b_last3_sig
-    df['sig_str_last3_dif'] = df['R_sig_str_last3'] - df['B_sig_str_last3']
-
-    # --- Defensive & Damage Profiles ---
-    sapm_r_cols = [c for c in df.columns if 'absorbed' in c.lower() and 'r_' in c.lower()]
-    sapm_b_cols = [c for c in df.columns if 'absorbed' in c.lower() and 'b_' in c.lower()]
-    if sapm_r_cols and sapm_b_cols:
-        df['SApM_dif'] = df[sapm_r_cols[0]] - df[sapm_b_cols[0]]
-
-    td_def_r_cols = [c for c in df.columns if 'td_def' in c.lower() and 'r_' in c.lower()]
-    td_def_b_cols = [c for c in df.columns if 'td_def' in c.lower() and 'b_' in c.lower()]
-    if td_def_r_cols and td_def_b_cols:
-        df['takedown_def_dif'] = df[td_def_r_cols[0]] - df[td_def_b_cols[0]]
-
-    # --- Grappling Control & Knockdowns ---
-    ctrl_r_cols = [c for c in df.columns if ('ctrl' in c.lower() or 'control' in c.lower()) and 'r_' in c.lower()]
-    ctrl_b_cols = [c for c in df.columns if ('ctrl' in c.lower() or 'control' in c.lower()) and 'b_' in c.lower()]
-    if ctrl_r_cols and ctrl_b_cols:
-        df['ctrl_time_dif'] = df[ctrl_r_cols[0]] - df[ctrl_b_cols[0]]
-
-    kd_r_cols = [c for c in df.columns if ('kd' in c.lower() or 'knockdown' in c.lower()) and 'r_' in c.lower()]
-    kd_b_cols = [c for c in df.columns if ('kd' in c.lower() or 'knockdown' in c.lower()) and 'b_' in c.lower()]
-    if kd_r_cols and kd_b_cols:
-        df['knockdown_dif'] = df[kd_r_cols[0]] - df[kd_b_cols[0]]
-
-    # Save back to CSV
-    df.to_csv(csv_path, index=False)
-    print("✅ Successfully engineered all features including dynamic Elo ratings!")
-
-if __name__ == "__main__":
-    engineer_advanced_features()
+    return df

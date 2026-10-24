@@ -1,120 +1,187 @@
 import os
-import pickle
 import pandas as pd
+import numpy as np
+import joblib
 
-def load_model_and_scaler():
+def load_model_and_artifacts():
     model_path = os.path.join("models", "ufc_model.pkl")
-    if not os.path.exists(model_path):
-        raise FileNotFoundError("Model file not found. Run 'python src/train.py' first.")
-    with open(model_path, "rb") as f:
-        model, scaler, _, _ = pickle.load(f)
-    return model, scaler
+    features_path = os.path.join("models", "feature_names.pkl")
+    
+    if not os.path.exists(model_path) or not os.path.exists(features_path):
+        print("❌ Model or feature list not found! Please run train.py first.")
+        return None, None
+        
+    model = joblib.load(model_path)
+    features = joblib.load(features_path)
+    return model, features
 
-def get_latest_fighter_stats(df, fighter_name):
-    """Searches the dataset for a fighter's most recent stats (Red or Blue corner)."""
-    r_fights = df[df['R_fighter'].str.lower() == fighter_name.lower()]
-    b_fights = df[df['B_fighter'].str.lower() == fighter_name.lower()]
+def build_global_fighter_registry(df):
+    registry = {}
+    r_cols = ['R_fighter', 'R_age', 'R_Reach_cms', 'R_Height_cms', 'R_avg_SIG_STR_landed', 'R_current_win_streak', 'weight_class']
+    r_df = df[[c for c in r_cols if c in df.columns]].copy()
+    r_df.columns = ['fighter', 'age', 'reach', 'height', 'sig_str_landed', 'win_streak', 'weight_class'][:r_df.shape[1]]
     
-    if r_fights.empty and b_fights.empty:
-        return None
-        
-    if not r_fights.empty and (b_fights.empty or r_fights.index[-1] > b_fights.index[-1]):
-        latest = r_fights.iloc[-1]
-        return {
-            'age': latest.get('R_age', 30),
-            'sig_str_landed': latest.get('R_avg_SIG_STR_landed', 0.0),
-            'win_streak': latest.get('R_win_streak', 0),
-            'losses': latest.get('R_losses', 0),
-            'longest_win_streak': latest.get('R_longest_win_streak', 0),
-            'height_cms': latest.get('R_height_cms', 175),
-            'reach_cms': latest.get('R_reach_cms', 175),
-            'avg_sub_att': latest.get('R_avg_SUB_ATT', 0.0),
-            'avg_td': latest.get('R_avg_TD_landed', 0.0)
+    b_cols = ['B_fighter', 'B_age', 'B_Reach_cms', 'B_Height_cms', 'B_avg_SIG_STR_landed', 'B_current_win_streak', 'weight_class']
+    b_df = df[[c for c in b_cols if c in df.columns]].copy()
+    b_df.columns = ['fighter', 'age', 'reach', 'height', 'sig_str_landed', 'win_streak', 'weight_class'][:b_df.shape[1]]
+    
+    combined = pd.concat([r_df, b_df]).dropna(subset=['fighter'])
+    latest = combined.drop_duplicates(subset=['fighter'], keep='last')
+    
+    for _, row in latest.iterrows():
+        name_key = str(row['fighter']).strip().lower()
+        registry[name_key] = {
+            'name': str(row['fighter']),
+            'age': row.get('age', df['R_age'].median()),
+            'reach': row.get('reach', df['R_Reach_cms'].median()),
+            'height': row.get('height', df['R_Height_cms'].median()),
+            'sig_str_landed': row.get('sig_str_landed', df['R_avg_SIG_STR_landed'].median()),
+            'win_streak': row.get('win_streak', 0),
+            'weight_class': row.get('weight_class', 'Unknown')
         }
-    else:
-        latest = b_fights.iloc[-1]
-        return {
-            'age': latest.get('B_age', 30),
-            'sig_str_landed': latest.get('B_avg_SIG_STR_landed', 0.0),
-            'win_streak': latest.get('B_win_streak', 0),
-            'losses': latest.get('B_losses', 0),
-            'longest_win_streak': latest.get('B_longest_win_streak', 0),
-            'height_cms': latest.get('B_height_cms', 175),
-            'reach_cms': latest.get('B_reach_cms', 175),
-            'avg_sub_att': latest.get('B_avg_SUB_ATT', 0.0),
-            'avg_td': latest.get('B_avg_TD_landed', 0.0)
-        }
-
-def predict_custom_matchup(red_fighter, blue_fighter):
-    data_path = os.path.join("data", "raw", "ufc-master.csv")
-    if not os.path.exists(data_path):
-        raise FileNotFoundError(f"Dataset missing at {data_path}")
         
-    df = pd.read_csv(data_path)
-    
-    r_stats = get_latest_fighter_stats(df, red_fighter)
-    b_stats = get_latest_fighter_stats(df, blue_fighter)
-    
-    if not r_stats:
-        print(f"❌ Error: Fighter '{red_fighter}' not found in database.")
-        return
-    if not b_stats:
-        print(f"❌ Error: Fighter '{blue_fighter}' not found in database.")
-        return
-        
-    diff_vector = {
-        'reach_dif': r_stats['reach_cms'] - b_stats['reach_cms'],
-        'age_dif': r_stats['age'] - b_stats['age'],
-        'height_dif': r_stats['height_cms'] - b_stats['height_cms'],
-        'win_streak_dif': r_stats['win_streak'] - b_stats['win_streak'],
-        'loss_dif': r_stats['losses'] - b_stats['losses'],
-        'longest_win_streak_dif': r_stats['longest_win_streak'] - b_stats['longest_win_streak'],
-        'sig_str_dif': r_stats['sig_str_landed'] - b_stats['sig_str_landed'],
-        'avg_sub_att_dif': r_stats['avg_sub_att'] - b_stats['avg_sub_att'],
-        'avg_td_dif': r_stats['avg_td'] - b_stats['avg_td'],
-        'R_age': r_stats['age'],
-        'B_age': b_stats['age'],
-        'R_avg_SIG_STR_landed': r_stats['sig_str_landed'],
-        'B_avg_SIG_STR_landed': b_stats['sig_str_landed']
+    # Manual safety patches for prominent names / recent cross-promotion additions
+    registry['patricio pitbull'] = {
+        'name': 'Patricio Pitbull', 'age': 39, 'reach': 67.0, 'height': 66.0, 
+        'sig_str_landed': 38.0, 'win_streak': 1, 'weight_class': 'Featherweight'
     }
+    registry['doo-ho choi'] = {
+        'name': 'Doo-Ho Choi', 'age': 35, 'reach': 70.0, 'height': 70.0, 
+        'sig_str_landed': 20.0, 'win_streak': 0, 'weight_class': 'Featherweight'
+    }
+    registry['dooho choi'] = registry['doo-ho choi']
     
-    feature_df = pd.DataFrame([diff_vector])
-    model, scaler = load_model_and_scaler()
-    scaled_features = scaler.transform(feature_df)
+    return registry
+
+def find_fighter_match(query, registry):
+    query = query.strip().lower()
+    if not query:
+        return []
     
-    proba = model.predict_proba(scaled_features)[0]
-    red_prob = proba[1] * 100
-    blue_prob = proba[0] * 100
+    matches = []
+    for key, data in registry.items():
+        full_name = data.get('name', '').lower()
+        if query in key or query in full_name:
+            if data not in matches:
+                matches.append(data)
+                
+    return matches[:10]
+
+def select_fighter(prompt_text, registry, df):
+    while True:
+        user_input = input(prompt_text).strip()
+        if user_input.lower() in ['q', 'exit']:
+            return None
+            
+        matches = find_fighter_match(user_input, registry)
+        
+        if len(matches) == 0:
+            print(f"\n⚠️ '{user_input}' not found in local records.")
+            choice = input("Would you like to create a custom profile for them using division averages? (y/n): ").strip().lower()
+            if choice == 'y':
+                return {
+                    'name': user_input.title(),
+                    'age': 29.0,
+                    'reach': df['R_Reach_cms'].median(),
+                    'height': df['R_Height_cms'].median(),
+                    'sig_str_landed': df['R_avg_SIG_STR_landed'].median(),
+                    'win_streak': 1,
+                    'weight_class': 'Custom/Cross-Promotion'
+                }
+            else:
+                continue
+                
+        elif len(matches) == 1:
+            selected = matches[0]
+            print(f"✅ Selected: {selected['name']}")
+            return selected
+        else:
+            print(f"\n🔍 Multiple matches found for '{user_input}':")
+            for idx, item in enumerate(matches, 1):
+                print(f"  [{idx}] {item['name']} ({item['weight_class']})")
+            
+            choice = input("Enter number of the correct fighter (or type 'new' to create custom): ").strip()
+            if choice.lower() == 'new':
+                return {
+                    'name': user_input.title(),
+                    'age': 29.0,
+                    'reach': df['R_Reach_cms'].median(),
+                    'height': df['R_Height_cms'].median(),
+                    'sig_str_landed': df['R_avg_SIG_STR_landed'].median(),
+                    'win_streak': 1,
+                    'weight_class': 'Custom/Cross-Promotion'
+                }
+            elif choice.isdigit() and 1 <= int(choice) <= len(matches):
+                selected = matches[int(choice) - 1]
+                print(f"✅ Selected: {selected['name']}")
+                return selected
+
+def predict_custom_matchup(red_prof, blue_prof, df, model, features):
+    red_name = red_prof['name']
+    blue_name = blue_prof['name']
+    print(f"\n🔮 Analyzing matchup: {red_name} (Red) vs {blue_name} (Blue)...")
+
+    synth = {}
+    for f in features:
+        if f == 'sig_str_dif' or f == 'R_avg_SIG_STR_landed' or f == 'B_avg_SIG_STR_landed':
+            synth['sig_str_dif'] = red_prof['sig_str_landed'] - blue_prof['sig_str_landed']
+            synth['R_avg_SIG_STR_landed'] = red_prof['sig_str_landed']
+            synth['B_avg_SIG_STR_landed'] = blue_prof['sig_str_landed']
+        elif f == 'age_dif' or f == 'R_age' or f == 'B_age':
+            synth['age_dif'] = red_prof['age'] - blue_prof['age']
+            synth['R_age'] = red_prof['age']
+            synth['B_age'] = blue_prof['age']
+        elif f == 'reach_dif':
+            synth['reach_dif'] = red_prof['reach'] - blue_prof['reach']
+        elif f == 'height_dif':
+            synth['height_dif'] = red_prof['height'] - blue_prof['height']
+        elif f == 'win_streak_dif':
+            synth['win_streak_dif'] = red_prof['win_streak'] - blue_prof['win_streak']
+        else:
+            synth[f] = 0.0
+
+    X_pred = pd.DataFrame([synth])[features].fillna(0)
+
+    win_prob = model.predict_proba(X_pred)[0]
+    red_prob = win_prob[1]
+    blue_prob = win_prob[0]
+
+    print("=" * 45)
+    print(f"🥊 PREDICTION RESULTS:")
+    print(f"🔴 Red Corner ({red_name}): {red_prob * 100:.2f}% probability")
+    print(f"🔵 Blue Corner ({blue_name}): {blue_prob * 100:.2f}% probability")
     
-    winner = red_fighter if red_prob > blue_prob else blue_fighter
-    confidence = max(red_prob, blue_prob)
-    
-    print("\n" + "=" * 50)
-    print("            MATCHUP PREDICTION RESULT")
-    print("=" * 50)
-    print(f"🔴 {red_fighter}: {red_prob:.1f}% win probability")
-    print(f"🔵 {blue_fighter}: {blue_prob:.1f}% win probability")
-    print("-" * 50)
-    print(f"🏆 Predicted Winner: {winner} ({confidence:.1f}% confidence)")
-    print("=" * 50 + "\n")
+    winner = red_name if red_prob > blue_prob else blue_name
+    print(f"🏆 Predicted Winner: {winner}")
+    print("=" * 45)
 
 if __name__ == "__main__":
-    print("\n--- UFC Matchup Predictor Terminal Interface ---")
+    print("--- UFC Matchup Predictor Terminal Interface (Global Registry + Patches) ---")
     print("Type 'q' or 'exit' at any time to quit.\n")
     
+    csv_path = os.path.join("data", "raw", "ufc-master.csv")
+    if os.path.exists(csv_path):
+        global_df = pd.read_csv(csv_path)
+    else:
+        print("❌ Dataset missing. Please check your data directory.")
+        exit(1)
+
+    print("⏳ Building global fighter registry...")
+    fighter_registry = build_global_fighter_registry(global_df)
+    print(f"✅ Loaded {len(fighter_registry)} fighters into memory!")
+
+    model, features = load_model_and_artifacts()
+    if model is None:
+        exit(1)
+
     while True:
-        red_input = input("Enter Red Corner Fighter: ").strip()
-        if red_input.lower() in ['q', 'quit', 'exit']:
-            print("Exiting predictor. See ya!")
+        red_prof = select_fighter("Enter Red Corner Fighter (partial name ok): ", fighter_registry, global_df)
+        if not red_prof:
             break
             
-        blue_input = input("Enter Blue Corner Fighter: ").strip()
-        if blue_input.lower() in ['q', 'quit', 'exit']:
-            print("Exiting predictor. See ya!")
+        blue_prof = select_fighter("Enter Blue Corner Fighter (partial name ok): ", fighter_registry, global_df)
+        if not blue_prof:
             break
             
-        if not red_input or not blue_input:
-            print("⚠️ Please enter valid fighter names.\n")
-            continue
-            
-        predict_custom_matchup(red_input, blue_input)
+        predict_custom_matchup(red_prof, blue_prof, global_df, model, features)
+        print("\n" + "-"*45 + "\n")
