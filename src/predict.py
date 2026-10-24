@@ -40,7 +40,7 @@ def build_global_fighter_registry(df):
             'weight_class': row.get('weight_class', 'Unknown')
         }
         
-    # Manual safety patches for prominent names / recent cross-promotion additions
+    # Manual safety patches
     registry['patricio pitbull'] = {
         'name': 'Patricio Pitbull', 'age': 39, 'reach': 67.0, 'height': 66.0, 
         'sig_str_landed': 38.0, 'win_streak': 1, 'weight_class': 'Featherweight'
@@ -70,15 +70,24 @@ def find_fighter_match(query, registry):
 def select_fighter(prompt_text, registry, df):
     while True:
         user_input = input(prompt_text).strip()
+        
+        # Check for global exit or back commands
         if user_input.lower() in ['q', 'exit']:
-            return None
+            return 'EXIT'
+        if user_input.lower() in ['b', 'back']:
+            return 'BACK'
+            
+        if not user_input:
+            continue
             
         matches = find_fighter_match(user_input, registry)
         
         if len(matches) == 0:
             print(f"\n⚠️ '{user_input}' not found in local records.")
-            choice = input("Would you like to create a custom profile for them using division averages? (y/n): ").strip().lower()
-            if choice == 'y':
+            choice = input("Create a custom profile? (y/n/back): ").strip().lower()
+            if choice in ['b', 'back']:
+                continue
+            elif choice == 'y':
                 return {
                     'name': user_input.title(),
                     'age': 29.0,
@@ -100,8 +109,11 @@ def select_fighter(prompt_text, registry, df):
             for idx, item in enumerate(matches, 1):
                 print(f"  [{idx}] {item['name']} ({item['weight_class']})")
             
-            choice = input("Enter number of the correct fighter (or type 'new' to create custom): ").strip()
-            if choice.lower() == 'new':
+            choice = input("Enter number, type 'new' for custom, or 'back' to search again: ").strip().lower()
+            if choice in ['b', 'back']:
+                print("↩️ Returning to search...")
+                continue
+            elif choice == 'new':
                 return {
                     'name': user_input.title(),
                     'age': 29.0,
@@ -115,6 +127,8 @@ def select_fighter(prompt_text, registry, df):
                 selected = matches[int(choice) - 1]
                 print(f"✅ Selected: {selected['name']}")
                 return selected
+            else:
+                print("❌ Invalid selection, try again.")
 
 def predict_custom_matchup(red_prof, blue_prof, df, model, features):
     red_name = red_prof['name']
@@ -156,8 +170,8 @@ def predict_custom_matchup(red_prof, blue_prof, df, model, features):
     print("=" * 45)
 
 if __name__ == "__main__":
-    print("--- UFC Matchup Predictor Terminal Interface (Global Registry + Patches) ---")
-    print("Type 'q' or 'exit' at any time to quit.\n")
+    print("--- UFC Matchup Predictor Terminal Interface ---")
+    print("Type 'b' or 'back' to go back, or 'q' to quit at any time.\n")
     
     csv_path = os.path.join("data", "raw", "ufc-master.csv")
     if os.path.exists(csv_path):
@@ -175,13 +189,19 @@ if __name__ == "__main__":
         exit(1)
 
     while True:
-        red_prof = select_fighter("Enter Red Corner Fighter (partial name ok): ", fighter_registry, global_df)
-        if not red_prof:
+        red_prof = select_fighter("Enter Red Corner Fighter (or type 'b' to back): ", fighter_registry, global_df)
+        if red_prof == 'EXIT':
             break
+        if red_prof == 'BACK':
+            print("\n")
+            continue
             
-        blue_prof = select_fighter("Enter Blue Corner Fighter (partial name ok): ", fighter_registry, global_df)
-        if not blue_prof:
+        blue_prof = select_fighter("Enter Blue Corner Fighter (or type 'b' to back): ", fighter_registry, global_df)
+        if blue_prof == 'EXIT':
             break
+        if blue_prof == 'BACK':
+            print("\n↩️ Restarting matchup selection...\n")
+            continue
             
         predict_custom_matchup(red_prof, blue_prof, global_df, model, features)
         print("\n" + "-"*45 + "\n")
