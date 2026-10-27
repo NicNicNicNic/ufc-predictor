@@ -35,8 +35,8 @@ Prerequisites
 
 Clone the repository and install the required dependencies:
 
-git clone https://github.com/your-username/ufc-matchup-predictor.git
-cd ufc-matchup-predictor
+git clone https://github.com/NicNicNicNic/ufc-predictor.git
+cd "UFC Fight Predictor"
 pip install -r requirements.txt
 
 
